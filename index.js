@@ -78,17 +78,25 @@ async function getTrackInfo(link) {
 /* ---------------- COMMANDS ---------------- */
 
 const commands = [
+
   new SlashCommandBuilder()
     .setName("start")
-    .setDescription("Start a music competition")
+    .setDescription("Start a TrackBattle competition")
     .addStringOption(o =>
-      o.setName("theme").setDescription("Competition theme").setRequired(true)
+      o.setName("theme")
+       .setDescription("Competition theme")
+       .setRequired(true)
     )
-    .addIntegerOption(o =>
-      o.setName("submission_minutes").setDescription("Submission duration").setRequired(true)
-    )
-    .addIntegerOption(o =>
-      o.setName("voting_minutes").setDescription("Voting duration").setRequired(true)
+    .addStringOption(o =>
+      o.setName("mode")
+       .setDescription("Competition duration mode")
+       .setRequired(true)
+       .addChoices(
+         { name: "⚡ Quick (10/10)", value: "quick" },
+         { name: "🎵 Standard (15/15)", value: "standard" },
+         { name: "🏆 Extended (30/30)", value: "extended" },
+         { name: "🕰️ Marathon (60/60)", value: "marathon" }
+       )
     ),
 
   new SlashCommandBuilder()
@@ -250,104 +258,6 @@ client.on(Events.InteractionCreate, async interaction => {
 
   const g = data.guilds[guildId];
 
-  /* ---------- BUTTONS ---------- */
-
-  if (interaction.isButton()) {
-
-    if (interaction.channelId !== g.channelId) {
-      return interaction.reply({
-        content: `Please use TrackBattle in <#${g.channelId}>`,
-        ephemeral: true
-      });
-    }
-
-    if (interaction.customId === "submit_track") {
-      const modal = new ModalBuilder()
-        .setCustomId("submit_modal")
-        .setTitle("Submit Your Track");
-
-      const input = new TextInputBuilder()
-        .setCustomId("spotify_link")
-        .setLabel("Spotify Track URL")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      return interaction.showModal(modal);
-    }
-
-    if (interaction.customId.startsWith("vote_")) {
-
-      if (g.phase !== "voting") {
-        return interaction.reply({ content: "Voting not active.", ephemeral: true });
-      }
-
-      const index = parseInt(interaction.customId.split("_")[1]);
-      const submission = g.submissions[index - 1];
-
-      if (submission.userId === interaction.user.id) {
-        return interaction.reply({
-          content: "You cannot vote for your own submission.",
-          ephemeral: true
-        });
-      }
-
-      g.votes[interaction.user.id] = index;
-      saveData(data);
-
-      return interaction.reply({ content: "Vote recorded!", ephemeral: true });
-    }
-  }
-
-  /* ---------- MODAL ---------- */
-
-  if (interaction.isModalSubmit()) {
-
-    if (interaction.channelId !== g.channelId) {
-      return interaction.reply({
-        content: `Please use TrackBattle in <#${g.channelId}>`,
-        ephemeral: true
-      });
-    }
-
-    if (g.phase !== "submission") {
-      return interaction.reply({ content: "Submissions closed.", ephemeral: true });
-    }
-
-    const link = interaction.fields.getTextInputValue("spotify_link");
-    const track = await getTrackInfo(link);
-
-    if (!track) {
-      return interaction.reply({ content: "Invalid Spotify link.", ephemeral: true });
-    }
-
-    if (!g.submissions) g.submissions = [];
-    if (!g.votes) g.votes = {};
-
-    if (g.submissions.find(s => s.userId === interaction.user.id)) {
-      return interaction.reply({ content: "You already submitted.", ephemeral: true });
-    }
-
-    if (g.submissions.find(s => s.trackId === track.id)) {
-      return interaction.reply({
-        content: "This song has already been submitted this round.",
-        ephemeral: true
-      });
-    }
-
-    g.submissions.push({
-      userId: interaction.user.id,
-      trackId: track.id,
-      title: track.name,
-      artist: track.artists.map(a => a.name).join(", "),
-      url: track.external_urls.spotify
-    });
-
-    saveData(data);
-
-    return interaction.reply({ content: "Submission received!", ephemeral: true });
-  }
-
   /* ---------- SLASH COMMANDS ---------- */
 
   if (!interaction.isChatInputCommand()) return;
@@ -392,21 +302,43 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     const theme = interaction.options.getString("theme");
-    const submissionMinutes = interaction.options.getInteger("submission_minutes");
-    const votingMinutes = interaction.options.getInteger("voting_minutes");
+    const mode = interaction.options.getString("mode");
+
+    let submissionMinutes;
+    let votingMinutes;
+
+    switch (mode) {
+      case "quick":
+        submissionMinutes = 10;
+        votingMinutes = 10;
+        break;
+      case "standard":
+        submissionMinutes = 15;
+        votingMinutes = 15;
+        break;
+      case "extended":
+        submissionMinutes = 30;
+        votingMinutes = 30;
+        break;
+      case "marathon":
+        submissionMinutes = 60;
+        votingMinutes = 60;
+        break;
+      default:
+        submissionMinutes = 15;
+        votingMinutes = 15;
+    }
 
     g.active = true;
     g.phase = "submission";
     g.theme = theme;
     g.submissions = [];
     g.votes = {};
-    g.channelId = interaction.channelId;
-
     saveData(data);
 
     const embed = new EmbedBuilder()
       .setTitle("🎵 TrackBattle Competition Started")
-      .setDescription(`Theme: **${theme}**`)
+      .setDescription(`Theme: **${theme}**\nMode: **${mode.toUpperCase()}**`)
       .setColor(0x1DB954)
       .setFooter({ text: "TrackBattle League" });
 
