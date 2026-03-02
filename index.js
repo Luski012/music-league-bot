@@ -1,5 +1,6 @@
 require("dotenv").config();
 const fs = require("fs");
+
 const {
   Client,
   GatewayIntentBits,
@@ -23,7 +24,7 @@ const client = new Client({
 
 const DATA_FILE = "./data.json";
 
-/* ---------------- DATA ---------------- */
+/* ================= DATA ================= */
 
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
@@ -36,7 +37,7 @@ function saveData(data) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
-/* ---------------- SPOTIFY ---------------- */
+/* ================= SPOTIFY ================= */
 
 async function getSpotifyToken() {
   const response = await fetch("https://accounts.spotify.com/api/token", {
@@ -75,7 +76,7 @@ async function getTrackInfo(link) {
   }
 }
 
-/* ---------------- COMMANDS ---------------- */
+/* ================= COMMANDS ================= */
 
 const commands = [
 
@@ -83,9 +84,7 @@ const commands = [
     .setName("start")
     .setDescription("Start a TrackBattle competition")
     .addStringOption(o =>
-      o.setName("theme")
-       .setDescription("Competition theme")
-       .setRequired(true)
+      o.setName("theme").setDescription("Competition theme").setRequired(true)
     )
     .addStringOption(o =>
       o.setName("mode")
@@ -127,17 +126,18 @@ const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
   console.log("Global commands registered.");
 })();
 
-/* ---------------- HELPERS ---------------- */
+/* ================= HELPERS ================= */
 
 async function sendReminder(guildId, message) {
   const data = loadData();
   const g = data.guilds[guildId];
   if (!g || !g.active) return;
+
   const channel = await client.channels.fetch(g.channelId);
   await channel.send(`⏰ ${message}`);
 }
 
-/* ---------------- COMPETITION LOGIC ---------------- */
+/* ================= COMPETITION LOGIC ================= */
 
 async function startVoting(guildId) {
   const data = loadData();
@@ -156,7 +156,7 @@ async function startVoting(guildId) {
     .setColor(0x5865F2)
     .setFooter({ text: "TrackBattle League" });
 
-  const components = [];
+  const rows = [];
 
   g.submissions.forEach((s, i) => {
     embed.addFields({
@@ -164,7 +164,7 @@ async function startVoting(guildId) {
       value: s.artist
     });
 
-    components.push(
+    rows.push(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setLabel("🎧 Listen")
@@ -178,7 +178,7 @@ async function startVoting(guildId) {
     );
   });
 
-  await channel.send({ embeds: [embed], components });
+  await channel.send({ embeds: [embed], components: rows });
 }
 
 async function endCompetition(guildId) {
@@ -238,7 +238,7 @@ async function endCompetition(guildId) {
   saveData(data);
 }
 
-/* ---------------- INTERACTIONS ---------------- */
+/* ================= INTERACTIONS ================= */
 
 client.on(Events.InteractionCreate, async interaction => {
 
@@ -257,6 +257,107 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   const g = data.guilds[guildId];
+
+  /* ---------- BUTTONS ---------- */
+
+  if (interaction.isButton()) {
+
+    if (interaction.channelId !== g.channelId) {
+      return interaction.reply({
+        content: `Please use TrackBattle in <#${g.channelId}>`,
+        ephemeral: true
+      });
+    }
+
+    if (interaction.customId === "submit_track") {
+      const modal = new ModalBuilder()
+        .setCustomId("submit_modal")
+        .setTitle("Submit Your Track");
+
+      const input = new TextInputBuilder()
+        .setCustomId("spotify_link")
+        .setLabel("Spotify Track URL")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return interaction.showModal(modal);
+    }
+
+    if (interaction.customId.startsWith("vote_")) {
+
+      if (g.phase !== "voting") {
+        return interaction.reply({ content: "Voting not active.", ephemeral: true });
+      }
+
+      const index = parseInt(interaction.customId.split("_")[1]);
+      const submission = g.submissions[index - 1];
+
+      if (submission.userId === interaction.user.id) {
+        return interaction.reply({
+          content: "You cannot vote for your own submission.",
+          ephemeral: true
+        });
+      }
+
+      g.votes[interaction.user.id] = index;
+      saveData(data);
+
+      return interaction.reply({ content: "Vote recorded!", ephemeral: true });
+    }
+  }
+
+  /* ---------- MODAL ---------- */
+
+  if (interaction.isModalSubmit()) {
+
+    if (interaction.channelId !== g.channelId) {
+      return interaction.reply({
+        content: `Please use TrackBattle in <#${g.channelId}>`,
+        ephemeral: true
+      });
+    }
+
+    if (g.phase !== "submission") {
+      return interaction.reply({ content: "Submissions closed.", ephemeral: true });
+    }
+
+    const link = interaction.fields.getTextInputValue("spotify_link");
+    const track = await getTrackInfo(link);
+
+    if (!track || !track.id) {
+      return interaction.reply({
+        content: "Please submit a valid Spotify **track** URL.",
+        ephemeral: true
+      });
+    }
+
+    if (!g.submissions) g.submissions = [];
+    if (!g.votes) g.votes = {};
+
+    if (g.submissions.find(s => s.userId === interaction.user.id)) {
+      return interaction.reply({ content: "You already submitted.", ephemeral: true });
+    }
+
+    if (g.submissions.find(s => s.trackId === track.id)) {
+      return interaction.reply({
+        content: "This song has already been submitted this round.",
+        ephemeral: true
+      });
+    }
+
+    g.submissions.push({
+      userId: interaction.user.id,
+      trackId: track.id,
+      title: track.name,
+      artist: track.artists.map(a => a.name).join(", "),
+      url: track.external_urls.spotify
+    });
+
+    saveData(data);
+
+    return interaction.reply({ content: "Submission received!", ephemeral: true });
+  }
 
   /* ---------- SLASH COMMANDS ---------- */
 
