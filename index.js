@@ -394,27 +394,35 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (interaction.commandName === "leaderboard") {
 
-    const sorted = Object.entries(g.stats)
-      .sort((a, b) => b[1].wins - a[1].wins);
+  const sorted = Object.entries(g.stats)
+    .sort((a, b) => b[1].wins - a[1].wins);
 
-    if (sorted.length === 0) {
-      return interaction.reply("No stats yet.");
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle("🏆 Server Leaderboard")
-      .setColor(0xFFD700)
-      .setFooter({ text: "TrackBattle League" });
-
-    sorted.slice(0, 10).forEach(([userId, stats], i) => {
-      embed.addFields({
-        name: `${i + 1}. <@${userId}>`,
-        value: `Wins: ${stats.wins} | Submissions: ${stats.submissions}`
-      });
-    });
-
-    return interaction.reply({ embeds: [embed] });
+  if (sorted.length === 0) {
+    return interaction.reply("No stats yet.");
   }
+
+  const embed = new EmbedBuilder()
+    .setTitle("🏆 Server Leaderboard")
+    .setColor(0xFFD700)
+    .setFooter({ text: "TrackBattle League" });
+
+  for (let i = 0; i < Math.min(sorted.length, 10); i++) {
+    const [userId, stats] = sorted[i];
+
+    let username = "Unknown User";
+    try {
+      const member = await interaction.guild.members.fetch(userId);
+      username = member.user.username;
+    } catch {}
+
+    embed.addFields({
+      name: `${i + 1}. ${username}`,
+      value: `Wins: ${stats.wins} | Submissions: ${stats.submissions}`
+    });
+  }
+
+  return interaction.reply({ embeds: [embed] });
+}
 
   if (interaction.commandName === "history") {
 
