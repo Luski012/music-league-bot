@@ -92,6 +92,10 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName("setchannel")
+    .setDescription("Set the TrackBattle competition channel"),
+
+  new SlashCommandBuilder()
     .setName("status")
     .setDescription("Check competition status"),
 
@@ -102,6 +106,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("history")
     .setDescription("View past competitions")
+
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
@@ -114,7 +119,7 @@ const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
   console.log("Global commands registered.");
 })();
 
-/* ---------------- CORE LOGIC ---------------- */
+/* ---------------- HELPERS ---------------- */
 
 async function sendReminder(guildId, message) {
   const data = loadData();
@@ -123,6 +128,8 @@ async function sendReminder(guildId, message) {
   const channel = await client.channels.fetch(g.channelId);
   await channel.send(`⏰ ${message}`);
 }
+
+/* ---------------- COMPETITION LOGIC ---------------- */
 
 async function startVoting(guildId) {
   const data = loadData();
@@ -139,7 +146,7 @@ async function startVoting(guildId) {
     .setTitle("🗳️ Voting Phase Started!")
     .setDescription("Listen and vote for your favorite track.")
     .setColor(0x5865F2)
-    .setFooter({ text: "TrackBattle" });
+    .setFooter({ text: "TrackBattle League" });
 
   const components = [];
 
@@ -180,29 +187,24 @@ async function endCompetition(guildId) {
 
   results.sort((a, b) => b.votes - a.votes);
 
-const highestVotes = results[0]?.votes || 0;
+  const highestVotes = results[0]?.votes || 0;
+  const winners = results.filter(r => r.votes === highestVotes && highestVotes > 0);
 
-// Find all tied winners
-const winners = results.filter(r => r.votes === highestVotes && highestVotes > 0);
-
-// Update submission counts
-results.forEach(r => {
-  if (!g.stats[r.userId]) {
-    g.stats[r.userId] = { wins: 0, submissions: 0 };
-  }
-  g.stats[r.userId].submissions += 1;
-});
-
-// Award wins to all tied winners
-winners.forEach(w => {
-  g.stats[w.userId].wins += 1;
-
-  g.history.push({
-    theme: g.theme,
-    winner: w.userId,
-    song: w.title
+  results.forEach(r => {
+    if (!g.stats[r.userId]) {
+      g.stats[r.userId] = { wins: 0, submissions: 0 };
+    }
+    g.stats[r.userId].submissions += 1;
   });
-});
+
+  winners.forEach(w => {
+    g.stats[w.userId].wins += 1;
+    g.history.push({
+      theme: g.theme,
+      winner: w.userId,
+      song: w.title
+    });
+  });
 
   saveData(data);
 
@@ -210,10 +212,10 @@ winners.forEach(w => {
     .setTitle("🏆 Competition Results")
     .setColor(0xFFD700)
     .setFooter({ text: "TrackBattle League" });
-  
+
   if (winners.length > 1) {
-  embed.setDescription("🔥 It's a tie! Multiple winners this round!");
-}
+    embed.setDescription("🔥 It's a tie! Multiple winners this round!");
+  }
 
   results.forEach((r, i) => {
     embed.addFields({
@@ -240,7 +242,8 @@ client.on(Events.InteractionCreate, async interaction => {
     data.guilds[guildId] = {
       active: false,
       stats: {},
-      history: []
+      history: [],
+      channelId: null
     };
     saveData(data);
   }
@@ -250,6 +253,13 @@ client.on(Events.InteractionCreate, async interaction => {
   /* ---------- BUTTONS ---------- */
 
   if (interaction.isButton()) {
+
+    if (interaction.channelId !== g.channelId) {
+      return interaction.reply({
+        content: `Please use TrackBattle in <#${g.channelId}>`,
+        ephemeral: true
+      });
+    }
 
     if (interaction.customId === "submit_track") {
       const modal = new ModalBuilder()
@@ -275,7 +285,6 @@ client.on(Events.InteractionCreate, async interaction => {
       const index = parseInt(interaction.customId.split("_")[1]);
       const submission = g.submissions[index - 1];
 
-      // Anti-self vote
       if (submission.userId === interaction.user.id) {
         return interaction.reply({
           content: "You cannot vote for your own submission.",
@@ -293,6 +302,13 @@ client.on(Events.InteractionCreate, async interaction => {
   /* ---------- MODAL ---------- */
 
   if (interaction.isModalSubmit()) {
+
+    if (interaction.channelId !== g.channelId) {
+      return interaction.reply({
+        content: `Please use TrackBattle in <#${g.channelId}>`,
+        ephemeral: true
+      });
+    }
 
     if (g.phase !== "submission") {
       return interaction.reply({ content: "Submissions closed.", ephemeral: true });
@@ -312,7 +328,6 @@ client.on(Events.InteractionCreate, async interaction => {
       return interaction.reply({ content: "You already submitted.", ephemeral: true });
     }
 
-    // Prevent duplicate song submissions
     if (g.submissions.find(s => s.trackId === track.id)) {
       return interaction.reply({
         content: "This song has already been submitted this round.",
@@ -321,12 +336,12 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     g.submissions.push({
-  userId: interaction.user.id,
-  trackId: track.id,
-  title: track.name,
-  artist: track.artists.map(a => a.name).join(", "),
-  url: track.external_urls.spotify
-});
+      userId: interaction.user.id,
+      trackId: track.id,
+      title: track.name,
+      artist: track.artists.map(a => a.name).join(", "),
+      url: track.external_urls.spotify
+    });
 
     saveData(data);
 
@@ -337,10 +352,39 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (!interaction.isChatInputCommand()) return;
 
+  if (interaction.commandName === "setchannel") {
+
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+      return interaction.reply({ content: "Admins only.", ephemeral: true });
+    }
+
+    g.channelId = interaction.channelId;
+    saveData(data);
+
+    return interaction.reply({
+      content: `TrackBattle channel set to <#${interaction.channelId}>`,
+      ephemeral: true
+    });
+  }
+
   if (interaction.commandName === "start") {
 
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return interaction.reply({ content: "Admins only.", ephemeral: true });
+    }
+
+    if (!g.channelId) {
+      return interaction.reply({
+        content: "Please set a TrackBattle channel first using /setchannel.",
+        ephemeral: true
+      });
+    }
+
+    if (interaction.channelId !== g.channelId) {
+      return interaction.reply({
+        content: `TrackBattle competitions must be started in <#${g.channelId}>`,
+        ephemeral: true
+      });
     }
 
     if (g.active) {
@@ -403,52 +447,50 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (interaction.commandName === "status") {
     if (!g.active) {
-      return interaction.reply("No active competition.");
+      return interaction.reply({ content: "No active competition.", ephemeral: true });
     }
 
     return interaction.reply({
-  content: `Theme: ${g.theme}\nPhase: ${g.phase}\nSubmissions: ${g.submissions.length}`,
-  ephemeral: true
-});
-
+      content: `Theme: ${g.theme}\nPhase: ${g.phase}\nSubmissions: ${g.submissions.length}`,
+      ephemeral: true
+    });
   }
 
   if (interaction.commandName === "leaderboard") {
 
-  const sorted = Object.entries(g.stats)
-    .sort((a, b) => b[1].wins - a[1].wins);
+    const sorted = Object.entries(g.stats)
+      .sort((a, b) => b[1].wins - a[1].wins);
 
-  if (sorted.length === 0) {
-    return interaction.reply("No stats yet.");
+    if (sorted.length === 0) {
+      return interaction.reply({ content: "No stats yet.", ephemeral: true });
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("🏆 Server Leaderboard")
+      .setColor(0xFFD700)
+      .setFooter({ text: "TrackBattle League" });
+
+    for (let i = 0; i < Math.min(sorted.length, 10); i++) {
+      const [userId, stats] = sorted[i];
+      let username = "Unknown User";
+      try {
+        const member = await interaction.guild.members.fetch(userId);
+        username = member.user.username;
+      } catch {}
+
+      embed.addFields({
+        name: `${i + 1}. ${username}`,
+        value: `Wins: ${stats.wins} | Submissions: ${stats.submissions}`
+      });
+    }
+
+    return interaction.reply({ embeds: [embed], ephemeral: true });
   }
-
-  const embed = new EmbedBuilder()
-    .setTitle("🏆 Server Leaderboard")
-    .setColor(0xFFD700)
-    .setFooter({ text: "TrackBattle League" });
-
-  for (let i = 0; i < Math.min(sorted.length, 10); i++) {
-    const [userId, stats] = sorted[i];
-
-    let username = "Unknown User";
-    try {
-      const member = await interaction.guild.members.fetch(userId);
-      username = member.user.username;
-    } catch {}
-
-    embed.addFields({
-      name: `${i + 1}. ${username}`,
-      value: `Wins: ${stats.wins} | Submissions: ${stats.submissions}`
-    });
-  }
-
-  return interaction.reply({ embeds: [embed], ephemeral: true });
-}
 
   if (interaction.commandName === "history") {
 
     if (!g.history || g.history.length === 0) {
-      return interaction.reply("No past competitions.");
+      return interaction.reply({ content: "No past competitions.", ephemeral: true });
     }
 
     const embed = new EmbedBuilder()
