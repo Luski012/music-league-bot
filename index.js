@@ -179,24 +179,30 @@ async function endCompetition(guildId) {
   });
 
   results.sort((a, b) => b.votes - a.votes);
-  const winner = results[0];
 
-  // Update stats
-  results.forEach(r => {
-    if (!g.stats[r.userId]) {
-      g.stats[r.userId] = { wins: 0, submissions: 0 };
-    }
-    g.stats[r.userId].submissions += 1;
-  });
+const highestVotes = results[0]?.votes || 0;
 
-  if (winner) {
-    g.stats[winner.userId].wins += 1;
-    g.history.push({
-      theme: g.theme,
-      winner: winner.userId,
-      song: winner.title
-    });
+// Find all tied winners
+const winners = results.filter(r => r.votes === highestVotes && highestVotes > 0);
+
+// Update submission counts
+results.forEach(r => {
+  if (!g.stats[r.userId]) {
+    g.stats[r.userId] = { wins: 0, submissions: 0 };
   }
+  g.stats[r.userId].submissions += 1;
+});
+
+// Award wins to all tied winners
+winners.forEach(w => {
+  g.stats[w.userId].wins += 1;
+
+  g.history.push({
+    theme: g.theme,
+    winner: w.userId,
+    song: w.title
+  });
+});
 
   saveData(data);
 
@@ -204,6 +210,10 @@ async function endCompetition(guildId) {
     .setTitle("🏆 Competition Results")
     .setColor(0xFFD700)
     .setFooter({ text: "TrackBattle League" });
+  
+  if (winners.length > 1) {
+  embed.setDescription("🔥 It's a tie! Multiple winners this round!");
+}
 
   results.forEach((r, i) => {
     embed.addFields({
