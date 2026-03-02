@@ -387,9 +387,11 @@ client.on(Events.InteractionCreate, async interaction => {
       return interaction.reply("No active competition.");
     }
 
-    return interaction.reply(
-      `Theme: ${g.theme}\nPhase: ${g.phase}\nSubmissions: ${g.submissions.length}`
-    );
+    return interaction.reply({
+  content: `Theme: ${g.theme}\nPhase: ${g.phase}\nSubmissions: ${g.submissions.length}`,
+  ephemeral: true
+});
+
   }
 
   if (interaction.commandName === "leaderboard") {
@@ -421,7 +423,7 @@ client.on(Events.InteractionCreate, async interaction => {
     });
   }
 
-  return interaction.reply({ embeds: [embed] });
+  return interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
   if (interaction.commandName === "history") {
@@ -442,7 +444,7 @@ client.on(Events.InteractionCreate, async interaction => {
       });
     });
 
-    return interaction.reply({ embeds: [embed] });
+    return interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
 });
