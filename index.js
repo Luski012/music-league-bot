@@ -151,10 +151,12 @@ async function startVoting(guildId) {
   const channel = await client.channels.fetch(g.channelId);
 
   const embed = new EmbedBuilder()
-    .setTitle("🗳️ Voting Phase Started!")
-    .setDescription("Listen and vote for your favorite track.")
-    .setColor(0x5865F2)
-    .setFooter({ text: "TrackBattle League" });
+  .setTitle("🗳️ Voting Phase Started!")
+  .setDescription(
+    `Theme: **${g.theme}**\n\nListen and vote for the track that best fits the theme.`
+  )
+  .setColor(0x5865F2)
+  .setFooter({ text: "TrackBattle League" });
 
   const rows = [];
 
