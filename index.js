@@ -1,3 +1,5 @@
+// FULL TRACKBATTLE LEAGUE VERSION
+
 require("dotenv").config();
 const fs = require("fs");
 const {
@@ -23,8 +25,6 @@ const client = new Client({
 
 const DATA_FILE = "./data.json";
 const activeTimers = {};
-
-/* ---------------- DATA ---------------- */
 
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
@@ -87,32 +87,47 @@ const commands = [
     )
     .addIntegerOption(o =>
       o.setName("submission_minutes")
-       .setDescription("Submission duration (minutes)")
+       .setDescription("Submission duration")
        .setRequired(true)
     )
     .addIntegerOption(o =>
       o.setName("voting_minutes")
-       .setDescription("Voting duration (minutes)")
+       .setDescription("Voting duration")
        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("status")
-    .setDescription("Check current competition status")
+    .setDescription("Check competition status"),
+
+  new SlashCommandBuilder()
+    .setName("leaderboard")
+    .setDescription("View server leaderboard"),
+
+  new SlashCommandBuilder()
+    .setName("history")
+    .setDescription("View past winners")
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
 (async () => {
   await rest.put(
-  Routes.applicationCommands(process.env.CLIENT_ID),
-  { body: commands }
-);
-
-  console.log("Guild commands registered.");
+    Routes.applicationCommands(process.env.CLIENT_ID),
+    { body: commands }
+  );
+  console.log("Global commands registered.");
 })();
 
-/* ---------------- PHASE LOGIC ---------------- */
+/* ---------------- COMPETITION LOGIC ---------------- */
+
+async function sendReminder(guildId, message) {
+  const data = loadData();
+  const g = data.guilds[guildId];
+  if (!g) return;
+  const channel = await client.channels.fetch(g.channelId);
+  await channel.send(`⏰ ${message}`);
+}
 
 async function startVoting(guildId) {
   const data = loadData();
@@ -120,14 +135,13 @@ async function startVoting(guildId) {
   if (!g) return;
 
   g.phase = "voting";
-  g.submissions.sort(() => Math.random() - 0.5); // anonymous shuffle
+  g.submissions.sort(() => Math.random() - 0.5);
   saveData(data);
 
   const channel = await client.channels.fetch(g.channelId);
 
   const embed = new EmbedBuilder()
     .setTitle("🗳️ Voting Phase Started!")
-    .setDescription("Listen and vote for your favorite track.")
     .setColor(0x5865F2);
 
   const components = [];
@@ -169,6 +183,31 @@ async function endCompetition(guildId) {
 
   results.sort((a, b) => b.votes - a.votes);
 
+  const winner = results[0];
+
+  if (winner) {
+    if (!g.stats[winner.userId]) {
+      g.stats[winner.userId] = { wins: 0, submissions: 0, streak: 0 };
+    }
+    g.stats[winner.userId].wins += 1;
+    g.stats[winner.userId].streak += 1;
+  }
+
+  g.submissions.forEach(s => {
+    if (!g.stats[s.userId]) {
+      g.stats[s.userId] = { wins: 0, submissions: 0, streak: 0 };
+    }
+    g.stats[s.userId].submissions += 1;
+  });
+
+  g.history.push({
+    theme: g.theme,
+    winner: winner ? winner.userId : null,
+    song: winner ? winner.title : null
+  });
+
+  saveData(data);
+
   const embed = new EmbedBuilder()
     .setTitle("🏆 Competition Results")
     .setColor(0xFFD700);
@@ -180,25 +219,9 @@ async function endCompetition(guildId) {
     });
   });
 
-  // Champion role
-  try {
-    let role = channel.guild.roles.cache.find(r => r.name === "🏆 Music Champion");
-    if (!role) {
-      role = await channel.guild.roles.create({
-        name: "🏆 Music Champion",
-        color: 0xFFD700
-      });
-    }
-
-    if (results[0]) {
-      const winner = await channel.guild.members.fetch(results[0].userId);
-      await winner.roles.add(role);
-    }
-  } catch {}
-
   await channel.send({ embeds: [embed] });
 
-  data.guilds[guildId] = {};
+  g.active = false;
   saveData(data);
 }
 
@@ -210,7 +233,16 @@ client.on(Events.InteractionCreate, async interaction => {
   const guildId = interaction.guild?.id;
   if (!guildId) return;
 
-  /* ---------- BUTTONS ---------- */
+  if (!data.guilds[guildId]) {
+    data.guilds[guildId] = {
+      active: false,
+      stats: {},
+      history: []
+    };
+    saveData(data);
+  }
+
+  const g = data.guilds[guildId];
 
   if (interaction.isButton()) {
 
@@ -230,8 +262,7 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.customId.startsWith("vote_")) {
-      const g = data.guilds[guildId];
-      if (!g || g.phase !== "voting") {
+      if (g.phase !== "voting") {
         return interaction.reply({ content: "Voting not active.", ephemeral: true });
       }
 
@@ -243,18 +274,11 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 
-  /* ---------- MODAL ---------- */
-
   if (interaction.isModalSubmit()) {
     const link = interaction.fields.getTextInputValue("spotify_link");
-    const g = data.guilds[guildId];
 
-    if (!g || g.phase !== "submission") {
+    if (g.phase !== "submission") {
       return interaction.reply({ content: "Submissions closed.", ephemeral: true });
-    }
-
-    if (g.submissions.find(s => s.userId === interaction.user.id)) {
-      return interaction.reply({ content: "You already submitted.", ephemeral: true });
     }
 
     const track = await getTrackInfo(link);
@@ -274,35 +298,73 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.reply({ content: "Submission received!", ephemeral: true });
   }
 
-  /* ---------- SLASH COMMANDS ---------- */
-
   if (!interaction.isChatInputCommand()) return;
 
-  /* START (Admin Only) */
+  if (interaction.commandName === "leaderboard") {
+
+    const sorted = Object.entries(g.stats)
+      .sort((a, b) => b[1].wins - a[1].wins);
+
+    if (sorted.length === 0) {
+      return interaction.reply("No stats yet.");
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("🏆 Server Leaderboard")
+      .setColor(0xFFD700);
+
+    sorted.slice(0, 10).forEach(([userId, stats], i) => {
+      embed.addFields({
+        name: `${i + 1}. <@${userId}>`,
+        value: `Wins: ${stats.wins} | Submissions: ${stats.submissions}`
+      });
+    });
+
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  if (interaction.commandName === "history") {
+
+    if (g.history.length === 0) {
+      return interaction.reply("No past competitions.");
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("📜 Competition History")
+      .setColor(0x5865F2);
+
+    g.history.slice(-10).reverse().forEach(h => {
+      embed.addFields({
+        name: h.theme,
+        value: h.winner ? `Winner: <@${h.winner}> — ${h.song}` : "No winner"
+      });
+    });
+
+    return interaction.reply({ embeds: [embed] });
+  }
+
   if (interaction.commandName === "start") {
 
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
-      return interaction.reply({ content: "Only admins can start competitions.", ephemeral: true });
+      return interaction.reply({ content: "Admins only.", ephemeral: true });
     }
 
     const theme = interaction.options.getString("theme");
     const submissionMinutes = interaction.options.getInteger("submission_minutes");
     const votingMinutes = interaction.options.getInteger("voting_minutes");
 
-    data.guilds[guildId] = {
-      active: true,
-      phase: "submission",
-      theme,
-      submissions: [],
-      votes: {},
-      channelId: interaction.channelId
-    };
+    g.active = true;
+    g.phase = "submission";
+    g.theme = theme;
+    g.submissions = [];
+    g.votes = {};
+    g.channelId = interaction.channelId;
 
     saveData(data);
 
     const embed = new EmbedBuilder()
-      .setTitle("🎵 Music Competition Started")
-      .setDescription(`Theme: **${theme}**\nClick below to submit.`)
+      .setTitle("🎵 Competition Started")
+      .setDescription(`Theme: **${theme}**`)
       .setColor(0x1DB954);
 
     const row = new ActionRowBuilder().addComponents(
@@ -314,35 +376,29 @@ client.on(Events.InteractionCreate, async interaction => {
 
     await interaction.reply({ embeds: [embed], components: [row] });
 
-    activeTimers[guildId] = setTimeout(async () => {
+    setTimeout(() => sendReminder(guildId, "5 minutes left to submit!"),
+      (submissionMinutes * 60 * 1000) - (5 * 60 * 1000));
+
+    setTimeout(async () => {
       await startVoting(guildId);
 
-      activeTimers[guildId] = setTimeout(async () => {
-        await endCompetition(guildId);
-      }, votingMinutes * 60 * 1000);
+      setTimeout(() => sendReminder(guildId, "5 minutes left to vote!"),
+        (votingMinutes * 60 * 1000) - (5 * 60 * 1000));
+
+      setTimeout(() => endCompetition(guildId),
+        votingMinutes * 60 * 1000);
 
     }, submissionMinutes * 60 * 1000);
   }
 
-  /* STATUS */
   if (interaction.commandName === "status") {
-
-    const g = data.guilds[guildId];
-
-    if (!g || !g.active) {
-      return interaction.reply("❌ No active competition.");
+    if (!g.active) {
+      return interaction.reply("No active competition.");
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle("🎵 Competition Status")
-      .setColor(0x1DB954)
-      .addFields(
-        { name: "Theme", value: g.theme },
-        { name: "Phase", value: g.phase },
-        { name: "Submissions", value: String(g.submissions.length) }
-      );
-
-    return interaction.reply({ embeds: [embed] });
+    return interaction.reply(
+      `Theme: ${g.theme}\nPhase: ${g.phase}\nSubmissions: ${g.submissions.length}`
+    );
   }
 
 });
