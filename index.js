@@ -312,12 +312,21 @@ client.on(Events.InteractionCreate, async interaction => {
       return interaction.reply({ content: "You already submitted.", ephemeral: true });
     }
 
+    // Prevent duplicate song submissions
+    if (g.submissions.find(s => s.trackId === track.id)) {
+      return interaction.reply({
+        content: "This song has already been submitted this round.",
+        ephemeral: true
+      });
+    }
+
     g.submissions.push({
-      userId: interaction.user.id,
-      title: track.name,
-      artist: track.artists.map(a => a.name).join(", "),
-      url: track.external_urls.spotify
-    });
+  userId: interaction.user.id,
+  trackId: track.id,
+  title: track.name,
+  artist: track.artists.map(a => a.name).join(", "),
+  url: track.external_urls.spotify
+});
 
     saveData(data);
 
