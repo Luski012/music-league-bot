@@ -1,5 +1,3 @@
-// FULL TRACKBATTLE LEAGUE VERSION
-
 require("dotenv").config();
 const fs = require("fs");
 const {
@@ -24,7 +22,8 @@ const client = new Client({
 });
 
 const DATA_FILE = "./data.json";
-const activeTimers = {};
+
+/* ---------------- DATA ---------------- */
 
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
@@ -43,12 +42,12 @@ async function getSpotifyToken() {
   const response = await fetch("https://accounts.spotify.com/api/token", {
     method: "POST",
     headers: {
-      "Authorization":
+      Authorization:
         "Basic " +
         Buffer.from(
           process.env.SPOTIFY_CLIENT_ID +
-            ":" +
-            process.env.SPOTIFY_CLIENT_SECRET
+          ":" +
+          process.env.SPOTIFY_CLIENT_SECRET
         ).toString("base64"),
       "Content-Type": "application/x-www-form-urlencoded"
     },
@@ -81,19 +80,15 @@ async function getTrackInfo(link) {
 const commands = [
   new SlashCommandBuilder()
     .setName("start")
-    .setDescription("Start a timed music competition")
+    .setDescription("Start a music competition")
     .addStringOption(o =>
       o.setName("theme").setDescription("Competition theme").setRequired(true)
     )
     .addIntegerOption(o =>
-      o.setName("submission_minutes")
-       .setDescription("Submission duration")
-       .setRequired(true)
+      o.setName("submission_minutes").setDescription("Submission duration").setRequired(true)
     )
     .addIntegerOption(o =>
-      o.setName("voting_minutes")
-       .setDescription("Voting duration")
-       .setRequired(true)
+      o.setName("voting_minutes").setDescription("Voting duration").setRequired(true)
     ),
 
   new SlashCommandBuilder()
@@ -106,7 +101,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("history")
-    .setDescription("View past winners")
+    .setDescription("View past competitions")
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
@@ -119,12 +114,12 @@ const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
   console.log("Global commands registered.");
 })();
 
-/* ---------------- COMPETITION LOGIC ---------------- */
+/* ---------------- CORE LOGIC ---------------- */
 
 async function sendReminder(guildId, message) {
   const data = loadData();
   const g = data.guilds[guildId];
-  if (!g) return;
+  if (!g || !g.active) return;
   const channel = await client.channels.fetch(g.channelId);
   await channel.send(`⏰ ${message}`);
 }
@@ -142,7 +137,9 @@ async function startVoting(guildId) {
 
   const embed = new EmbedBuilder()
     .setTitle("🗳️ Voting Phase Started!")
-    .setColor(0x5865F2);
+    .setDescription("Listen and vote for your favorite track.")
+    .setColor(0x5865F2)
+    .setFooter({ text: "TrackBattle" });
 
   const components = [];
 
@@ -177,40 +174,36 @@ async function endCompetition(guildId) {
   const channel = await client.channels.fetch(g.channelId);
 
   const results = g.submissions.map((s, i) => {
-    const count = Object.values(g.votes).filter(v => v === i + 1).length;
-    return { ...s, votes: count };
+    const votes = Object.values(g.votes).filter(v => v === i + 1).length;
+    return { ...s, votes };
   });
 
   results.sort((a, b) => b.votes - a.votes);
-
   const winner = results[0];
 
+  // Update stats
+  results.forEach(r => {
+    if (!g.stats[r.userId]) {
+      g.stats[r.userId] = { wins: 0, submissions: 0 };
+    }
+    g.stats[r.userId].submissions += 1;
+  });
+
   if (winner) {
-    if (!g.stats[winner.userId]) {
-      g.stats[winner.userId] = { wins: 0, submissions: 0, streak: 0 };
-    }
     g.stats[winner.userId].wins += 1;
-    g.stats[winner.userId].streak += 1;
+    g.history.push({
+      theme: g.theme,
+      winner: winner.userId,
+      song: winner.title
+    });
   }
-
-  g.submissions.forEach(s => {
-    if (!g.stats[s.userId]) {
-      g.stats[s.userId] = { wins: 0, submissions: 0, streak: 0 };
-    }
-    g.stats[s.userId].submissions += 1;
-  });
-
-  g.history.push({
-    theme: g.theme,
-    winner: winner ? winner.userId : null,
-    song: winner ? winner.title : null
-  });
 
   saveData(data);
 
   const embed = new EmbedBuilder()
     .setTitle("🏆 Competition Results")
-    .setColor(0xFFD700);
+    .setColor(0xFFD700)
+    .setFooter({ text: "TrackBattle League" });
 
   results.forEach((r, i) => {
     embed.addFields({
@@ -244,6 +237,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
   const g = data.guilds[guildId];
 
+  /* ---------- BUTTONS ---------- */
+
   if (interaction.isButton()) {
 
     if (interaction.customId === "submit_track") {
@@ -262,11 +257,22 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.customId.startsWith("vote_")) {
+
       if (g.phase !== "voting") {
         return interaction.reply({ content: "Voting not active.", ephemeral: true });
       }
 
       const index = parseInt(interaction.customId.split("_")[1]);
+      const submission = g.submissions[index - 1];
+
+      // Anti-self vote
+      if (submission.userId === interaction.user.id) {
+        return interaction.reply({
+          content: "You cannot vote for your own submission.",
+          ephemeral: true
+        });
+      }
+
       g.votes[interaction.user.id] = index;
       saveData(data);
 
@@ -274,16 +280,26 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 
+  /* ---------- MODAL ---------- */
+
   if (interaction.isModalSubmit()) {
-    const link = interaction.fields.getTextInputValue("spotify_link");
 
     if (g.phase !== "submission") {
       return interaction.reply({ content: "Submissions closed.", ephemeral: true });
     }
 
+    const link = interaction.fields.getTextInputValue("spotify_link");
     const track = await getTrackInfo(link);
+
     if (!track) {
       return interaction.reply({ content: "Invalid Spotify link.", ephemeral: true });
+    }
+
+    if (!g.submissions) g.submissions = [];
+    if (!g.votes) g.votes = {};
+
+    if (g.submissions.find(s => s.userId === interaction.user.id)) {
+      return interaction.reply({ content: "You already submitted.", ephemeral: true });
     }
 
     g.submissions.push({
@@ -298,55 +314,18 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.reply({ content: "Submission received!", ephemeral: true });
   }
 
+  /* ---------- SLASH COMMANDS ---------- */
+
   if (!interaction.isChatInputCommand()) return;
-
-  if (interaction.commandName === "leaderboard") {
-
-    const sorted = Object.entries(g.stats)
-      .sort((a, b) => b[1].wins - a[1].wins);
-
-    if (sorted.length === 0) {
-      return interaction.reply("No stats yet.");
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle("🏆 Server Leaderboard")
-      .setColor(0xFFD700);
-
-    sorted.slice(0, 10).forEach(([userId, stats], i) => {
-      embed.addFields({
-        name: `${i + 1}. <@${userId}>`,
-        value: `Wins: ${stats.wins} | Submissions: ${stats.submissions}`
-      });
-    });
-
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  if (interaction.commandName === "history") {
-
-    if (g.history.length === 0) {
-      return interaction.reply("No past competitions.");
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle("📜 Competition History")
-      .setColor(0x5865F2);
-
-    g.history.slice(-10).reverse().forEach(h => {
-      embed.addFields({
-        name: h.theme,
-        value: h.winner ? `Winner: <@${h.winner}> — ${h.song}` : "No winner"
-      });
-    });
-
-    return interaction.reply({ embeds: [embed] });
-  }
 
   if (interaction.commandName === "start") {
 
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return interaction.reply({ content: "Admins only.", ephemeral: true });
+    }
+
+    if (g.active) {
+      return interaction.reply({ content: "A competition is already running.", ephemeral: true });
     }
 
     const theme = interaction.options.getString("theme");
@@ -363,9 +342,10 @@ client.on(Events.InteractionCreate, async interaction => {
     saveData(data);
 
     const embed = new EmbedBuilder()
-      .setTitle("🎵 Competition Started")
+      .setTitle("🎵 TrackBattle Competition Started")
       .setDescription(`Theme: **${theme}**`)
-      .setColor(0x1DB954);
+      .setColor(0x1DB954)
+      .setFooter({ text: "TrackBattle League" });
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -376,17 +356,28 @@ client.on(Events.InteractionCreate, async interaction => {
 
     await interaction.reply({ embeds: [embed], components: [row] });
 
-    setTimeout(() => sendReminder(guildId, "5 minutes left to submit!"),
-      (submissionMinutes * 60 * 1000) - (5 * 60 * 1000));
+    if (submissionMinutes > 5) {
+      setTimeout(() =>
+        sendReminder(guildId, "5 minutes left to submit!"),
+        (submissionMinutes - 5) * 60 * 1000
+      );
+    }
 
     setTimeout(async () => {
+
       await startVoting(guildId);
 
-      setTimeout(() => sendReminder(guildId, "5 minutes left to vote!"),
-        (votingMinutes * 60 * 1000) - (5 * 60 * 1000));
+      if (votingMinutes > 5) {
+        setTimeout(() =>
+          sendReminder(guildId, "5 minutes left to vote!"),
+          (votingMinutes - 5) * 60 * 1000
+        );
+      }
 
-      setTimeout(() => endCompetition(guildId),
-        votingMinutes * 60 * 1000);
+      setTimeout(() =>
+        endCompetition(guildId),
+        votingMinutes * 60 * 1000
+      );
 
     }, submissionMinutes * 60 * 1000);
   }
@@ -399,6 +390,51 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.reply(
       `Theme: ${g.theme}\nPhase: ${g.phase}\nSubmissions: ${g.submissions.length}`
     );
+  }
+
+  if (interaction.commandName === "leaderboard") {
+
+    const sorted = Object.entries(g.stats)
+      .sort((a, b) => b[1].wins - a[1].wins);
+
+    if (sorted.length === 0) {
+      return interaction.reply("No stats yet.");
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("🏆 Server Leaderboard")
+      .setColor(0xFFD700)
+      .setFooter({ text: "TrackBattle League" });
+
+    sorted.slice(0, 10).forEach(([userId, stats], i) => {
+      embed.addFields({
+        name: `${i + 1}. <@${userId}>`,
+        value: `Wins: ${stats.wins} | Submissions: ${stats.submissions}`
+      });
+    });
+
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  if (interaction.commandName === "history") {
+
+    if (!g.history || g.history.length === 0) {
+      return interaction.reply("No past competitions.");
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("📜 Competition History")
+      .setColor(0x5865F2)
+      .setFooter({ text: "TrackBattle League" });
+
+    g.history.slice(-10).reverse().forEach(h => {
+      embed.addFields({
+        name: h.theme,
+        value: `Winner: <@${h.winner}> — ${h.song}`
+      });
+    });
+
+    return interaction.reply({ embeds: [embed] });
   }
 
 });
